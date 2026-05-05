@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "ComboJudge.h"
 
 #include <algorithm>

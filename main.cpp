@@ -1,4 +1,4 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include <Windows.h>
 
 #include <algorithm>
@@ -24,7 +24,7 @@
 #include "MusicController.h"
 
 namespace fs = std::filesystem;
-
+using namespace FruitGame;
 namespace
 {
     struct MissIconSlot
@@ -319,6 +319,11 @@ namespace
         return static_cast<int>(std::lround(static_cast<double>(from) + (static_cast<double>(to - from) * clamp01(t))));
     }
 
+    double lerp(double from, double to, double t)
+    {
+        return from + (to - from) * clamp01(t);
+    }
+
     POINT closestPointOnSegment(const POINT& p, const POINT& a, const POINT& b)
     {
         const double abx = static_cast<double>(b.x - a.x);
@@ -438,7 +443,7 @@ namespace
         }
     }
 
-    void drawScoreHud(const IMAGE* scoreIcon, int score, double introProgress)
+    void drawScoreHud(const IMAGE* scoreIcon, int score, int highScore, double introProgress)
     {
         constexpr int kRefW = 640;
         constexpr int kRefH = 480;
@@ -480,9 +485,10 @@ namespace
 
         settextstyle(static_cast<int>(std::lround(14.0 * sy)), 0, L"Arial");
         settextcolor(RGB(175, 124, 5));
+        std::wstring bestStr = L"BEST " + std::to_wstring(highScore);
         outtextxy(lerpInt(static_cast<int>(std::lround(-93.0 * sx)), static_cast<int>(std::lround(7.0 * sx)), eased),
             static_cast<int>(std::lround(52.0 * sy)),
-            L"BEST 999");
+            bestStr.c_str());
     }
 
     void drawImageAlphaScaled(const IMAGE* img, int dstX, int dstY, double scale, double alphaMul = 1.0)
@@ -834,7 +840,7 @@ int main()
         outtextxy(20, 20, _T("Failed to load complete fruits in images/fruit"));
         outtextxy(20, 50, _T("Need files like apple.png, banana.png and not *-1/*-2."));
         FlushBatchDraw();
-        _getch();
+        (void)_getch();
         EndBatchDraw();
         closegraph();
         return 1;
@@ -928,7 +934,9 @@ int main()
     if (missXXXFImage.getwidth() > 0)
         cleanupAlphaMatte(missXXXFImage);
 
-    std::array<MissIconSlot, 3> missSlots{};
+    auto missSlotsPtr = std::make_unique<std::array<MissIconSlot, 3>>();
+    auto& missSlots = *missSlotsPtr;
+
     missSlots[0].normal = (missXImage.getwidth() > 0) ? &missXImage : nullptr;
     missSlots[0].failed = (missXFImage.getwidth() > 0) ? &missXFImage : missSlots[0].normal;
     missSlots[1].normal = (missXXImage.getwidth() > 0) ? &missXXImage : nullptr;
@@ -1006,6 +1014,31 @@ int main()
             music.enterScene(scene);
         };
 
+    // ============================================================
+    // Load main menu assets
+    // ============================================================
+    IMAGE logoImage;
+    loadimage(&logoImage, std::filesystem::absolute("images\\logo.png").c_str());
+
+    IMAGE ninjaImage;
+    loadimage(&ninjaImage, std::filesystem::absolute("images\\ninja.png").c_str());
+
+    IMAGE homeMaskImage;
+    loadimage(&homeMaskImage, std::filesystem::absolute("images\\home-mask.png").c_str());
+
+    IMAGE homeDescImage;
+    loadimage(&homeDescImage, std::filesystem::absolute("images\\home-desc.png").c_str());
+
+    // Clean up alpha on menu assets
+    if (logoImage.getwidth() > 0)
+        cleanupAlphaMatte(logoImage);
+    if (ninjaImage.getwidth() > 0)
+        cleanupAlphaMatte(ninjaImage);
+    if (homeMaskImage.getwidth() > 0)
+        cleanupAlphaMatte(homeMaskImage);
+    if (homeDescImage.getwidth() > 0)
+        cleanupAlphaMatte(homeDescImage);
+
     double bombHintTimer = 0.0;
     POINT bombHintPoint{ FruitGame::kWindowWidth / 2, FruitGame::kWindowHeight / 3 };
     enum class BombTransitionPhase
@@ -1032,19 +1065,30 @@ int main()
     bool bombPostGameOverMode = false;
     bool bombBackdropBlendActive = false;
     double bombBackdropBlendTimer = 0.0;
-    game.setBombHitCallback([&bombHintTimer, &bombHintPoint, &bombTransitionPhase, &bombSceneRequested, &bombTransitionTimer, &bombShakeTimer, &bombImpactPoint, &bombRayIndex, &bombRayEmitTimer, &music, kBombShakeDurationSec](POINT impact)
+    game.setBombHitCallback([&bombHintTimer, &bombHintPoint, &bombTransitionPhase, &bombSceneRequested, &bombTransitionTimer, &bombShakeTimer, &bombImpactPoint, &bombRayIndex, &bombRayEmitTimer, &music, &knife, &hitEffects, &comboTextEffects, &game, kBombShakeDurationSec](POINT impact)
         {
             bombHintTimer = 0.90;
             bombHintPoint = impact;
             bombImpactPoint = impact;
-            bombTransitionPhase = BombTransitionPhase::Pause;
             bombSceneRequested = false;
-            bombTransitionTimer = 1.55;
             bombShakeTimer = kBombShakeDurationSec;
             bombRayIndex = 0;
             bombRayEmitTimer = 0.0;
+            // Immediately start explosion rays — skip the pause for audio-visual sync with Boom SFX
+            constexpr int rayCount = 12;
+            constexpr double rayStepSec = 0.10;
+            bombTransitionPhase = BombTransitionPhase::Rays;
+            bombTransitionTimer = rayCount * rayStepSec;
+            // Stop spawning, clear all fruits and visual effects
+            game.setSpawnEnabled(false);
+            game.fruits().clear();
+            knife = FruitGame::FruitKnife();
+            hitEffects.clear();
+            comboTextEffects.clear();
             music.playSfx(FruitGame::SfxId::Boom);
             std::cout << "[Bomb] hit! starting transition" << std::endl; });
+
+    game.setSpawnEnabled(true);
 
     enum class MissGameOverPhase
     {
@@ -1058,7 +1102,34 @@ int main()
     bool missGameOverSceneRequested = false;
     constexpr double kMissStopThrowDelaySec = 2.0;
     constexpr double kMissGameOverRevealSec = 0.50;
+    constexpr double kScoreResultDisplaySec = 1.80;  // Score result page display duration
     constexpr double kRestartEnableDelaySec = 0.75;
+
+    // High score persistence
+    int highScore = 0;
+    const std::filesystem::path highScorePath = std::filesystem::absolute("highscore.dat");
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, highScorePath.string().c_str(), "rb") == 0 && f != nullptr)
+        {
+            fread(&highScore, sizeof(highScore), 1, f);
+            fclose(f);
+        }
+    }
+    // Hold Delete key at startup to reset high score
+    if ((GetAsyncKeyState(VK_DELETE) & 0x8000) != 0)
+    {
+        highScore = 0;
+        FILE* f = nullptr;
+        if (fopen_s(&f, highScorePath.string().c_str(), "wb") == 0 && f != nullptr)
+        {
+            fwrite(&highScore, sizeof(highScore), 1, f);
+            fclose(f);
+        }
+    }
+    bool showScoreResult = false;
+    double scoreResultTimer = 0.0;
+    int scoreResultCurrentScore = 0;
     bool prevRestartClickDown = false;
     bool restartMenuSliceLatched = false;
     bool restartMenuVisibleLastFrame = false;
@@ -1082,21 +1153,376 @@ int main()
                         music.playSfx(FruitGame::SfxId::Throw);
                     } });
 
-                    game.setBombHitCallback([&bombHintTimer, &bombHintPoint, &bombTransitionPhase, &bombSceneRequested, &bombTransitionTimer, &bombShakeTimer, &bombImpactPoint, &bombRayIndex, &bombRayEmitTimer, &music, kBombShakeDurationSec](POINT impact)
+                    game.setBombHitCallback([&bombHintTimer, &bombHintPoint, &bombTransitionPhase, &bombSceneRequested, &bombTransitionTimer, &bombShakeTimer, &bombImpactPoint, &bombRayIndex, &bombRayEmitTimer, &music, &knife, &hitEffects, &comboTextEffects, &game, kBombShakeDurationSec](POINT impact)
                         {
                             bombHintTimer = 0.90;
                             bombHintPoint = impact;
                             bombImpactPoint = impact;
-                            bombTransitionPhase = BombTransitionPhase::Pause;
                             bombSceneRequested = false;
-                            bombTransitionTimer = 1.55;
                             bombShakeTimer = kBombShakeDurationSec;
                             bombRayIndex = 0;
                             bombRayEmitTimer = 0.0;
+                            constexpr int rayCount = 12;
+                            constexpr double rayStepSec = 0.10;
+                            bombTransitionPhase = BombTransitionPhase::Rays;
+                            bombTransitionTimer = rayCount * rayStepSec;
+                            game.setSpawnEnabled(false);
+                            game.fruits().clear();
+                            knife = FruitGame::FruitKnife();
+                            hitEffects.clear();
+                            comboTextEffects.clear();
                             music.playSfx(FruitGame::SfxId::Boom);
                             std::cout << "[Bomb] hit! starting transition" << std::endl; });
         };
     bindGameCallbacks();
+
+    while (true)  // Outer loop: returns to main menu on bomb cut
+    {
+    {
+    // ============================================================
+    // Main Menu
+    // ============================================================
+    enum class MenuPhase {
+        Entrance,
+        Idle,
+        StartGame,
+        ExitGame
+    };
+    MenuPhase menuPhase = MenuPhase::Entrance;
+    double menuTimer = 0.0;
+    constexpr double kMenuEntranceDuration = 1.00;
+    constexpr double kNinjaStartX = 300.0;
+    constexpr double kNinjaEndY = 50.0;
+    constexpr double kNinjaStartY = -120.0;
+    constexpr double kLogoEndX = 5.0;
+    constexpr double kLogoEndY = 12.0;
+    constexpr double kMaskTargetH = 280.0;
+    constexpr double kMenuFruitCX = 300.0;
+    constexpr double kMenuFruitCY = 250.0;
+    constexpr double kMenuBombCX = 600.0;
+    constexpr double kMenuBombCY = 250.0;
+    constexpr double kMenuFruitScale =1.5;
+    constexpr double kMenuBombScale = 1.5;
+    // Vertical offset: positive = move down
+    constexpr double kMenuIconYOffset = 10.0;
+    constexpr double kMenuHitRadius = 80.0;
+    constexpr double kMenuSliceTransitionSec = 0.60;
+    bool menuSliceLatched = false;
+    bool menuSliceActionTaken = false;
+    double menuSliceTimer = 0.0;
+    int menuSliceAnimState = 0; // 0=none, 1=fruit-cut, 2=bomb-cut
+    POINT menuSlicePos{};
+    double menuSliceAngle = 0.0;
+
+    // Pre-blend bomb and new-game into background for menu rendering
+    auto renderMenu = [&](const FruitKnife& menuKnife, double dt) {
+        // Draw background
+        if (backgroundImage.getwidth() > 0) {
+            putimage(0, 0, &backgroundImage);
+        }
+
+        // Keep timer running during Entrance/Idle so icons keep spinning
+        if (menuPhase == MenuPhase::Entrance || menuPhase == MenuPhase::Idle) {
+            menuTimer += dt;
+        }
+        const double entryT = clamp01(menuTimer / kMenuEntranceDuration);
+        const double entryEased = std::max(1e-4, lerp(0.0, 1.0, entryT * entryT * (3.0 - 2.0 * entryT)));
+
+        // --- Layer 1: home-mask full width + stretched ---
+        if (homeMaskImage.getwidth() > 0) {
+            const double maskScaleX = static_cast<double>(FruitGame::kWindowWidth) / homeMaskImage.getwidth();
+            const double maskScaleY = kMaskTargetH / homeMaskImage.getheight();
+            // Draw twice to cover full width with alpha (drawImageAlphaScaled applies alpha on whole)
+            // Since drawImageAlphaScaled uses src, just draw at scale 2x
+            const int maskX = 0;
+            const int maskY = -35;
+            // Scale uniformly or stretch; use stretch: draw with scaleX
+            const double maskScale = std::max(maskScaleX, maskScaleY);
+            // Use stretch-fill: draw twice
+            const int maskW = static_cast<int>(homeMaskImage.getwidth() * maskScale);
+            const int maskH = static_cast<int>(homeMaskImage.getheight() * maskScale);
+            // Center horizontally
+            const int maskDrawX = (FruitGame::kWindowWidth - maskW) / 2;
+            drawImageAlphaScaled(&homeMaskImage, maskDrawX, maskY, maskScale, entryEased);
+        }
+
+        // --- Layer 2: Logo in top-left ---
+        if (logoImage.getwidth() > 0) {
+            const int logoSlideX = lerpInt(-logoImage.getwidth(), static_cast<int>(kLogoEndX), entryEased);
+            drawImageAlphaScaled(&logoImage, logoSlideX, static_cast<int>(kLogoEndY), 1.0, 1.0);
+        }
+
+        // --- Layer 2b: Home-desc ("slice to begin") sliding in from left independently ---
+        if (homeDescImage.getwidth() > 0) {
+            const int descStartX = -homeDescImage.getwidth();
+            const int descEndX = 14;
+            const int descSlideX = lerpInt(descStartX, descEndX, entryEased);
+            const int descY = 130;
+            drawImageAlphaScaled(&homeDescImage, descSlideX, descY, 1.0, entryEased);
+        }
+
+        // --- Layer 3: Ninja descending ---
+        if (ninjaImage.getwidth() > 0) {
+            double ninjaProgress = clamp01((menuTimer + 0.10) / 0.95);
+            double ninjaY;
+            if (ninjaProgress < 0.85) {
+                const double t = ninjaProgress / 0.85;
+                ninjaY = kNinjaStartY + (kNinjaEndY - kNinjaStartY) * t;
+            } else {
+                // Bounce effect: multiple decaying bounces after landing, spread over longer period
+                const double t = (ninjaProgress - 0.65) / 0.35;
+                // Three decaying bounces for a clear, visible landing animation
+                const double bounce1 = 25.0 * std::max(0.0, 1.0 - t * 1.2) * std::sin(t * 6.2832);
+                const double bounce2 = 10.0 * std::max(0.0, 1.0 - t * 2.5) * std::sin(t * 15.708 + 0.8);
+                const double bounce3 = 4.0 * std::max(0.0, 1.0 - t * 5.0) * std::sin(t * 31.416);
+                ninjaY = kNinjaEndY - bounce1 - bounce2 - bounce3;
+            }
+            const int ninjaX = static_cast<int>(kNinjaStartX);
+            drawImageAlphaScaled(&ninjaImage, ninjaX, static_cast<int>(ninjaY), 1.0, 1.0);
+
+        }
+
+        // --- Layer 4: Center icon carousel (fruit or bomb) with falling entrance animation ---
+        const double spinSpeed = 1.2;
+        const double orbitRadius = 120.0;
+        const double fruitAngle = menuPhase == MenuPhase::Idle ? menuTimer * spinSpeed : 0.0;
+        const double bombAngle = menuPhase == MenuPhase::Idle ? menuTimer * spinSpeed + 3.14159 : 0.0;
+
+        // Entrance animation: icons fall from top to their target position
+        const double kIconFallDuration = 0.70;
+        const double fallT = clamp01(menuTimer / kIconFallDuration);
+        const double easedFallT = std::max(1e-4, fallT * fallT * (3.0 - 2.0 * fallT));
+        const double iconFallOffsetY = (1.0 - easedFallT) * 120.0; // fall from 120px above
+
+        // If slicing transition is active, show cut animation instead
+        if (menuSliceAnimState > 0) {
+            menuSliceTimer += dt;
+            const double sliceProg = clamp01(menuSliceTimer / kMenuSliceTransitionSec);
+
+            // Button center coords (no wobble, matches render)
+            const double cutFruitBtnScale = kMenuFruitScale * 0.92;
+            const int cutFruitBtnCenterY = static_cast<int>(kMenuFruitCY + 90 + kMenuIconYOffset);
+            const int cutQuitBtnCenterY = static_cast<int>(kMenuBombCY + 90 + kMenuIconYOffset);
+
+            if (menuSliceAnimState == 1 && fruitSpriteSets.size() >= 1) {
+                // Fruit cut: 1.2x at button center + particles
+                const IMAGE* fruitEntire = loadedFruitSets.front().view.whole;
+                const IMAGE* fruitH1 = loadedFruitSets.front().view.half1;
+                const IMAGE* fruitH2 = loadedFruitSets.front().view.half2;
+                const double cutIconScale = 1.2;
+                const int cutCX = static_cast<int>(kMenuFruitCX);
+                const int cutCY = cutFruitBtnCenterY;
+                if (fruitEntire != nullptr) {
+                    if (sliceProg < 0.25) {
+                        const double s = 1.0 - sliceProg / 0.25;
+                        drawImageAlphaScaled(fruitEntire,
+                            static_cast<int>(cutCX - fruitEntire->getwidth() * cutIconScale * s / 2),
+                            static_cast<int>(cutCY - fruitEntire->getheight() * cutIconScale * s / 2),
+                            cutIconScale * s, 1.0);
+                    } else {
+                        const double flyT = (sliceProg - 0.25) / 0.75;
+                        const double flyDist = flyT * 160.0;
+                        const double flyAlpha = 1.0 - flyT * 0.5;
+                        const double hScale = cutIconScale * 0.85 * (1.0 - flyT * 0.2);
+                        if (fruitH1 != nullptr) {
+                            drawImageAlphaScaled(fruitH1,
+                                static_cast<int>(cutCX - fruitH1->getwidth() * hScale / 2 - flyDist),
+                                static_cast<int>(cutCY - fruitH1->getheight() * hScale / 2 - flyDist * 0.3),
+                                hScale, flyAlpha);
+                        }
+                        if (fruitH2 != nullptr) {
+                            drawImageAlphaScaled(fruitH2,
+                                static_cast<int>(cutCX - fruitH2->getwidth() * hScale / 2 + flyDist),
+                                static_cast<int>(cutCY - fruitH2->getheight() * hScale / 2 + flyDist * 0.3),
+                                hScale, flyAlpha);
+                        }
+                    }
+                }
+                // Update & render particles during cut animation
+                hitEffects.update(dt);
+                hitEffects.render();
+            } else if (menuSliceAnimState == 2) {
+                // Bomb cut animation with explosion flash and rays
+                const int bombSplashCX = static_cast<int>(kMenuBombCX);
+                const int bombSplashCY = cutQuitBtnCenterY;
+                
+                // Phase 1 (first 25%): bomb shrinks and emits rays
+                if (sliceProg < 0.25) {
+                    if (bombSpriteSetView.whole != nullptr) {
+                        const double s = 1.0 - sliceProg / 0.25;
+                        drawImageAlphaScaled(bombSpriteSetView.whole,
+                            static_cast<int>(bombSplashCX - bombSpriteSetView.whole->getwidth() * kMenuBombScale * s / 2),
+                            static_cast<int>(bombSplashCY - bombSpriteSetView.whole->getheight() * kMenuBombScale * s / 2),
+                            kMenuBombScale * std::max(0.0, s), 1.0);
+                    }
+                    // Draw expanding explosion rays
+                    constexpr int rayCount = 12;
+                    constexpr double kRaySpacing = 0.5236; // PI/6
+                    const double rayProgress = sliceProg / 0.25;
+                    const double rayLength = rayProgress * 200.0;
+                    const double rayAlpha = 1.0 - rayProgress * 0.5;
+                    for (int i = 0; i < rayCount; ++i) {
+                        const double angle = i * kRaySpacing;
+                        const double dx = std::cos(angle) * rayLength;
+                        const double dy = std::sin(angle) * rayLength;
+                        setlinecolor(RGB(255, 200, 50));
+                        setlinestyle(PS_SOLID, 3);
+                        line(bombSplashCX, bombSplashCY,
+                             bombSplashCX + static_cast<int>(dx),
+                             bombSplashCY + static_cast<int>(dy));
+                    }
+                    setlinestyle(PS_SOLID, 1);
+                }
+                // Phase 2 (25-50%): rays fade, white flash builds
+                else if (sliceProg < 0.50) {
+                    const double flashProg = (sliceProg - 0.25) / 0.25;
+                    blendScreenToWhite(flashProg);
+                }
+                // Phase 3 (50-100%): hold white flash
+                else {
+                    blendScreenToWhite(1.0);
+                }
+            }
+
+            // Check if animation done and cut was fruit → start game
+            if (sliceProg >= 1.0) {
+                if (menuSliceAnimState == 1) {
+                    menuPhase = MenuPhase::StartGame;
+                } else if (menuSliceAnimState == 2) {
+                    menuPhase = MenuPhase::ExitGame;
+                }
+            }
+
+            // Rotation stops when menu loop exits (menuTimer stops)
+            // menuTimer only ticks inside renderMenu lambda; loop exit stops it
+            return; // Skip normal rendering during transition
+        }
+
+        if (newGameImage.getwidth() > 0 && fruitSpriteSets.size() >= 1) {
+            // new-game icon: falls from top during entrance animation
+            const double btnScale = kMenuFruitScale * 0.92 * entryEased;
+            const int btnX = static_cast<int>(kMenuFruitCX - newGameImage.getwidth() * btnScale / 2);
+            const int btnBaseY = static_cast<int>(kMenuFruitCY + 90 + kMenuIconYOffset);
+            const int btnY = btnBaseY - newGameImage.getheight() * static_cast<int>(btnScale) / 2 + static_cast<int>(iconFallOffsetY);
+            drawImageAlphaScaled(&newGameImage, btnX, btnY, btnScale, entryEased);
+
+            // Fruit on top of new-game icon center, spinning (follows icon falling)
+            const IMAGE* fruitIcon = loadedFruitSets.front().view.whole;
+            if (fruitIcon != nullptr) {
+                const double spin = menuTimer * 1.5;
+                const double iconScale = 1.2 * entryEased;
+                const int iconDrawCX = static_cast<int>(kMenuFruitCX);
+                const int iconDrawCY = static_cast<int>(btnY + newGameImage.getheight() * btnScale / 2);
+                drawImageAlphaRotated(fruitIcon, iconDrawCX, iconDrawCY, spin, iconScale, entryEased);
+            }
+        }
+
+        if (quitImage.getwidth() > 0 && bombSpriteSetView.whole != nullptr) {
+            // quit icon: falls from top during entrance animation
+            const double btnScale = kMenuBombScale * 0.88 * entryEased;
+            const int btnBaseY = static_cast<int>(kMenuBombCY + 90 + kMenuIconYOffset);
+            const int btnX = static_cast<int>(kMenuBombCX - quitImage.getwidth() * btnScale / 2);
+            const int btnY = btnBaseY - quitImage.getheight() * static_cast<int>(btnScale) / 2 + static_cast<int>(iconFallOffsetY);
+            drawImageAlphaScaled(&quitImage, btnX, btnY, btnScale, entryEased);
+
+            // Bomb on top of quit icon center, spinning (falls from top with entrance)
+            const double spin = -menuTimer * 1.2;
+            const double iconScale = 0.7 * entryEased;
+            const int iconDrawCX = static_cast<int>(kMenuBombCX);
+            const int iconDrawCY = static_cast<int>(btnY + quitImage.getheight() * btnScale / 2);
+            drawImageAlphaRotated(bombSpriteSetView.whole, iconDrawCX, iconDrawCY + static_cast<int>(iconFallOffsetY), spin, iconScale, entryEased);
+        }
+    };
+
+    music.enterScene(FruitGame::UIScene::MainMenu);
+
+    // Clear hit effects for fresh entrance (important when re-entering from bomb cut)
+    hitEffects.clear();
+    comboTextEffects.clear();
+
+    // Initial menu loop
+    {
+        FruitKnife menuKnife;
+        auto menuPreviousTime = std::chrono::steady_clock::now();
+        menuPhase = MenuPhase::Entrance;
+        menuTimer = 0.0;
+        menuSliceLatched = false;
+        menuSliceActionTaken = false;
+        menuSliceAnimState = 0;
+        menuSliceTimer = 0.0;
+        const HWND hwnd = GetHWnd();
+        while (menuPhase != MenuPhase::StartGame && menuPhase != MenuPhase::ExitGame && IsWindow(hwnd)) {
+            if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+                menuPhase = MenuPhase::ExitGame;
+                break;
+            }
+
+            const auto menuNow = std::chrono::steady_clock::now();
+            double dt = std::chrono::duration<double>(menuNow - menuPreviousTime).count();
+            menuPreviousTime = menuNow;
+            dt = std::clamp(dt, 0.0, 0.033);
+
+            menuKnife.update(dt, hwnd);
+
+            // Check slice on menu options (only when idle and no cut animation playing)
+            if (menuPhase == MenuPhase::Idle && menuSliceAnimState == 0 && !menuSliceLatched && menuKnife.isSlicing() && menuKnife.hasBladeSegment()) {
+                POINT bladeFrom, bladeTo;
+                menuKnife.bladeSegment(&bladeFrom, &bladeTo);
+
+                // Hit detection at button center (no wobble)
+                const POINT fruitCenter{
+                    static_cast<LONG>(std::lround(kMenuFruitCX)),
+                    static_cast<LONG>(std::lround(kMenuFruitCY + 90 + kMenuIconYOffset))
+                };
+                const double fruitD2 = distanceSqPointToSegment(fruitCenter, bladeFrom, bladeTo);
+                if (fruitD2 <= kMenuHitRadius * kMenuHitRadius) {
+                    menuSliceAnimState = 1;
+                    menuSliceTimer = 0.0;
+                    menuPhase = MenuPhase::Idle;
+                    // Juice particles at slice point
+                    hitEffects.add(FruitGame::makeJuiceEffect(fruitCenter, RGB(255, 60, 60)));
+                    music.playSfx(FruitGame::SfxId::Splatter);
+                    menuSliceLatched = true;
+                }
+
+                const POINT bombCenter{
+                    static_cast<LONG>(std::lround(kMenuBombCX)),
+                    static_cast<LONG>(std::lround(kMenuBombCY + 90 + kMenuIconYOffset))
+                };
+                const double bombD2 = distanceSqPointToSegment(bombCenter, bladeFrom, bladeTo);
+                if (menuSliceAnimState == 0 && bombD2 <= kMenuHitRadius * kMenuHitRadius) {
+                    menuSliceAnimState = 2;
+                    menuSliceTimer = 0.0;
+                    menuPhase = MenuPhase::Idle;
+                    music.playSfx(FruitGame::SfxId::Boom);
+                    menuSliceLatched = true;
+                }
+            }
+
+            if (!menuKnife.isSlicing()) {
+                menuSliceLatched = false;
+            }
+
+            if (menuTimer >= 0.80 && menuPhase == MenuPhase::Entrance) {
+                menuPhase = MenuPhase::Idle;
+            }
+
+            // Render
+            cleardevice();
+            renderMenu(menuKnife, dt);
+            menuKnife.render();
+            FlushBatchDraw();
+            Sleep(16);
+        }
+
+        music.stopBgm();
+
+        if (menuPhase == MenuPhase::ExitGame) {
+            EndBatchDraw();
+            closegraph();
+            return 0;
+        }
+    }
 
     music.enterScene(FruitGame::UIScene::Gameplay);
     music.playSfx(FruitGame::SfxId::Start);
@@ -1245,6 +1671,8 @@ int main()
                 slot.animTimer = 1.0;
             }
 
+            game.setSpawnEnabled(true);
+
             music.enterScene(FruitGame::UIScene::Gameplay);
             music.playSfx(FruitGame::SfxId::Start);
         };
@@ -1307,14 +1735,39 @@ int main()
             }
             else if (missGameOverPhase == MissGameOverPhase::Reveal && missGameOverTimer <= 0.0)
             {
+                // Game Over fade-in done -> show score result
+                showScoreResult = true;
+                scoreResultTimer = kScoreResultDisplaySec;
+                scoreResultCurrentScore = score;
+                // Update high score
+                if (score > highScore)
+                {
+                    highScore = score;
+                    FILE* f = nullptr;
+                    if (fopen_s(&f, highScorePath.string().c_str(), "wb") == 0 && f != nullptr)
+                    {
+                        fwrite(&highScore, sizeof(highScore), 1, f);
+                        fclose(f);
+                    }
+                }
                 missGameOverPhase = MissGameOverPhase::Hold;
-                missGameOverTimer = kRestartEnableDelaySec;
+                missGameOverTimer = kRestartEnableDelaySec + kScoreResultDisplaySec;
             }
             knifeSfxPending = false;
         }
 
+        // Score result countdown
+        if (showScoreResult)
+        {
+            scoreResultTimer = std::max(0.0, scoreResultTimer - dt);
+            if (scoreResultTimer <= 0.0)
+            {
+                showScoreResult = false;
+            }
+        }
+
         const bool spawnUnlocked = (gameTimeSec >= kGameplaySpawnDelaySec);
-        const bool restartReady = (missGameOverPhase == MissGameOverPhase::Hold) && (missGameOverTimer <= 0.0);
+        const bool restartReady = (missGameOverPhase == MissGameOverPhase::Hold) && (missGameOverTimer <= kScoreResultDisplaySec + 0.01) && !showScoreResult;
         if (bombTransitionPhase == BombTransitionPhase::None && !bombPostGameOverMode)
         {
             if (spawnUnlocked)
@@ -1550,6 +2003,8 @@ int main()
                     }
                     else
                     {
+                        // Bomb cut -> return to main menu
+                        resetGameplayState();
                         running = false;
                     }
                     restartMenuSliceAction = RestartMenuSliceAction::None;
@@ -1578,9 +2033,9 @@ int main()
             const int quitX = menuCenterX + menuHalfGap;
             const int quitY = menuCenterY;
 
-            const POINT restartCenter{ restartX, restartY - 10 };
-            const POINT quitCenter{ quitX, quitY - 10 };
-            const double kSliceHitRadius = std::max(24.0, 34.0 * entryPop);
+            const POINT restartCenter{ restartX, restartY };
+            const POINT quitCenter{ quitX, quitY };
+            const double kSliceHitRadius = std::max(24.0, 50.0 * entryPop);
 
             if (!knife.isSlicing())
             {
@@ -1752,7 +2207,7 @@ int main()
                 }
             }
 
-            drawScoreHud(scoreImage.getwidth() > 0 ? &scoreImage : nullptr, score, hudIntroProgress);
+            drawScoreHud(scoreImage.getwidth() > 0 ? &scoreImage : nullptr, score, highScore, hudIntroProgress);
             drawMissCounterHud(missSlots, game.missedCount(), dt, hudIntroProgress);
         }
         else
@@ -1784,7 +2239,7 @@ int main()
                 }
             }
 
-            drawScoreHud(scoreImage.getwidth() > 0 ? &scoreImage : nullptr, score, hudIntroProgress);
+            drawScoreHud(scoreImage.getwidth() > 0 ? &scoreImage : nullptr, score, highScore, hudIntroProgress);
             drawMissCounterHud(missSlots, game.missedCount(), dt, hudIntroProgress);
         }
 
@@ -1794,39 +2249,76 @@ int main()
             blendScreenToWhite(1.0 - t);
         }
 
-        if (!bombInTransition && (missGameOverPhase == MissGameOverPhase::Reveal || missGameOverPhase == MissGameOverPhase::Hold) &&
-            gameOverImage.getwidth() > 0 && gameOverImage.getheight() > 0)
+        // Game Over: fade-out image, score appears big & centered after image is gone
+        if (!bombInTransition && (missGameOverPhase == MissGameOverPhase::Reveal || missGameOverPhase == MissGameOverPhase::Hold))
         {
             const double t = (missGameOverPhase == MissGameOverPhase::Reveal)
                 ? clamp01(1.0 - missGameOverTimer / kMissGameOverRevealSec)
                 : 1.0;
             const double pop = std::max(1e-5, easeOutExpo(t));
 
-            const double sxGameOver = static_cast<double>(FruitGame::kWindowWidth) / 640.0;
-            const double syGameOver = static_cast<double>(FruitGame::kWindowHeight) / 480.0;
-            const double targetW = 490.0 * sxGameOver;
-            const double targetH = 85.0 * syGameOver;
-            const double baseScale = std::min(targetW / static_cast<double>(gameOverImage.getwidth()),
-                targetH / static_cast<double>(gameOverImage.getheight()));
-            const double drawScale = std::max(1e-5, baseScale * pop);
+            const double sx = static_cast<double>(FruitGame::kWindowWidth) / 640.0;
+            const double sy = static_cast<double>(FruitGame::kWindowHeight) / 480.0;
 
-            const int centerX = static_cast<int>(std::lround((75.0 + 245.0) * sxGameOver));
-            const int centerY = static_cast<int>(std::lround((198.0 + 42.5) * syGameOver));
-            const int drawW = std::max(1, static_cast<int>(std::lround(gameOverImage.getwidth() * drawScale)));
-            const int drawH = std::max(1, static_cast<int>(std::lround(gameOverImage.getheight() * drawScale)));
-            const int drawX = centerX - drawW / 2;
-            const int drawY = centerY - drawH / 2;
+            // Game-over image fades when restart icons appear
+            double imgAlpha = 0.65 + 0.35 * t;
+            if (restartReady)
+                imgAlpha = std::max(0.0, imgAlpha - clamp01(restartMenuAnimTimer * 2.0));
 
-            drawImageAlphaScaled(&gameOverImage, drawX, drawY, drawScale, 0.65 + 0.35 * t);
+            if (gameOverImage.getwidth() > 0 && gameOverImage.getheight() > 0 && imgAlpha > 0.0)
+            {
+                const double targetW = 490.0 * sx;
+                const double targetH = 85.0 * sy;
+                const double baseScale = std::min(targetW / static_cast<double>(gameOverImage.getwidth()),
+                    targetH / static_cast<double>(gameOverImage.getheight()));
+                const double drawScale = std::max(1e-5, baseScale * pop);
+                const int imgCX = static_cast<int>(std::lround(320.0 * sx));
+                const int imgCY = static_cast<int>(std::lround(200.0 * sy));
+                drawImageAlphaScaled(&gameOverImage,
+                    static_cast<int>(imgCX - gameOverImage.getwidth() * drawScale / 2),
+                    static_cast<int>(imgCY - gameOverImage.getheight() * drawScale / 2),
+                    drawScale, imgAlpha);
+            }
+
+            // Score centered vertically, well above restart icons
+            if (imgAlpha <= 0.0 || restartReady)
+            {
+                const double cx = 320.0 * sx;
+                const double cy = 100.0 * sy;
+
+                setbkmode(TRANSPARENT);
+                settextcolor(RGB(255, 255, 255));
+                settextstyle(26, 0, L"Arial");
+                {
+                    std::wstring txt = L"Score: " + std::to_wstring(score);
+                    int tw = textwidth(txt.c_str());
+                    outtextxy(static_cast<int>(cx) - tw / 2,
+                        static_cast<int>(cy - 12 * sy), txt.c_str());
+                }
+
+                settextcolor(RGB(255, 220, 80));
+                settextstyle(20, 0, L"Arial");
+                {
+                    std::wstring txt = L"High Score: " + std::to_wstring(highScore);
+                    if (score >= highScore && score > 0)
+                    {
+                        txt = L"New Record! " + txt;
+                        settextcolor(RGB(255, 100, 100));
+                    }
+                    int tw = textwidth(txt.c_str());
+                    outtextxy(static_cast<int>(cx) - tw / 2,
+                        static_cast<int>(cy + 14 * sy), txt.c_str());
+                }
+            }
         }
 
         if (restartReady)
         {
             const double sxMenu = static_cast<double>(FruitGame::kWindowWidth) / 640.0;
             const double syMenu = static_cast<double>(FruitGame::kWindowHeight) / 480.0;
-            const int menuHalfGap = static_cast<int>(std::lround(111.0 * sxMenu));
+            const int menuHalfGap = static_cast<int>(std::lround(140.0 * sxMenu));
             const int menuCenterX = FruitGame::kWindowWidth / 2;
-            const int menuCenterY = static_cast<int>(std::lround((344.0 + std::sin(gameTimeSec * 2.2) * 3.0) * syMenu));
+            const int menuCenterY = static_cast<int>(std::lround(344.0 * syMenu));
             const int restartX = menuCenterX - menuHalfGap;
             const int restartY = menuCenterY;
             const int quitX = menuCenterX + menuHalfGap;
@@ -1838,44 +2330,58 @@ int main()
             const double sliceT = clamp01(restartMenuSliceTimer / 0.34);
             const double sliceSpread = 20.0 + 46.0 * easeOutExpo(sliceT);
             const double sliceFall = 4.0 + 64.0 * sliceT * sliceT;
-            const double restartScale = 0.84 * entryPop;
-            const double restartFruitScale = 0.60 * entryPop;
-            const double quitScale = 0.84 * entryPop;
-            const double quitBombScale = 0.52 * entryPop;
+            const double restartScale = 1.5 * entryPop;
+            const double restartFruitScale = 1.2 * entryPop;
+            const double quitScale = 1.5 * entryPop;
+            const double quitBombScale = 0.7 * entryPop;
 
-            if (newGameImage.getwidth() > 0)
+                if (newGameImage.getwidth() > 0)
             {
-                drawImageAlphaRotated(&newGameImage, restartX, restartY, ringSpin, restartScale, 0.98);
+                // new-game 图标固定不转
+                drawImageAlphaScaled(&newGameImage,
+                    static_cast<int>(restartX - newGameImage.getwidth() * restartScale / 2),
+                    static_cast<int>(restartY - newGameImage.getheight() * restartScale / 2),
+                    restartScale, 0.98);
+
+                // 水果在图标中央持续旋转（同主菜单 1.2x）
+                if (restartFruitIcon != nullptr && restartFruitIcon->getwidth() > 0)
+                {
+                    const double fruitSpin = gameTimeSec * 1.5;
+                    const double fruitScale = 1.2 * entryPop;
+                    if (restartMenuSliceAction == RestartMenuSliceAction::None || restartFruitSetView == nullptr || restartFruitSetView->half1 == nullptr || restartFruitSetView->half2 == nullptr)
+                    {
+                        drawImageAlphaRotated(restartFruitIcon, restartX, restartY, fruitSpin, fruitScale, 0.98);
+                    }
+                    else
+                    {
+                        const double cutPerp = restartMenuSliceAngle + 1.57079632679;
+                        const int half1X = restartX + static_cast<int>(std::lround(std::cos(cutPerp) * sliceSpread));
+                        const int half1Y = restartY + static_cast<int>(std::lround(std::sin(cutPerp) * sliceSpread + sliceFall));
+                        const int half2X = restartX - static_cast<int>(std::lround(std::cos(cutPerp) * sliceSpread));
+                        const int half2Y = restartY - static_cast<int>(std::lround(std::sin(cutPerp) * sliceSpread)) + static_cast<int>(std::lround(sliceFall));
+                        const double half1Angle = restartMenuSliceAngle + 0.58 + 1.0 * sliceT;
+                        const double half2Angle = restartMenuSliceAngle - 0.58 - 1.0 * sliceT;
+                        const double halfScale = 1.2 * entryPop;
+
+                        drawImageAlphaRotated(restartFruitSetView->half1, half1X, half1Y, half1Angle, halfScale, 0.98);
+                        drawImageAlphaRotated(restartFruitSetView->half2, half2X, half2Y, half2Angle, halfScale, 0.98);
+                    }
+                }
             }
             if (quitImage.getwidth() > 0)
             {
-                drawImageAlphaRotated(&quitImage, quitX, quitY, -ringSpin, quitScale, 0.98);
-            }
+                // quit 图标固定不转
+                drawImageAlphaScaled(&quitImage,
+                    static_cast<int>(quitX - quitImage.getwidth() * quitScale / 2),
+                    static_cast<int>(quitY - quitImage.getheight() * quitScale / 2),
+                    quitScale, 0.98);
 
-            if (restartFruitIcon != nullptr && restartFruitIcon->getwidth() > 0)
-            {
-                if (restartMenuSliceAction == RestartMenuSliceAction::None || restartFruitSetView == nullptr || restartFruitSetView->half1 == nullptr || restartFruitSetView->half2 == nullptr)
+                // 炸弹在图标中央持续旋转（同主菜单 0.7x）
+                if (bombSpriteSetView.whole != nullptr && bombSpriteSetView.whole->getwidth() > 0)
                 {
-                    drawImageAlphaRotated(restartFruitIcon, restartX, restartY - 10, ringSpin * 1.35, restartFruitScale, 0.98);
+                    const double bombSpin = -gameTimeSec * 1.2;
+                    drawImageAlphaRotated(bombSpriteSetView.whole, quitX, quitY, bombSpin, 0.7 * entryPop, 0.98);
                 }
-                else
-                {
-                    const double cutPerp = restartMenuSliceAngle + 1.57079632679;
-                    const int half1X = restartX + static_cast<int>(std::lround(std::cos(cutPerp) * sliceSpread));
-                    const int half1Y = restartY + static_cast<int>(std::lround(std::sin(cutPerp) * sliceSpread + sliceFall));
-                    const int half2X = restartX - static_cast<int>(std::lround(std::cos(cutPerp) * sliceSpread));
-                    const int half2Y = restartY - static_cast<int>(std::lround(std::sin(cutPerp) * sliceSpread)) + static_cast<int>(std::lround(sliceFall));
-                    const double half1Angle = restartMenuSliceAngle + 0.58 + 1.0 * sliceT;
-                    const double half2Angle = restartMenuSliceAngle - 0.58 - 1.0 * sliceT;
-                    const double halfScale = 0.70 * entryPop;
-
-                    drawImageAlphaRotated(restartFruitSetView->half1, half1X, half1Y, half1Angle, halfScale, 0.98);
-                    drawImageAlphaRotated(restartFruitSetView->half2, half2X, half2Y, half2Angle, halfScale, 0.98);
-                }
-            }
-            if (bombSpriteSetView.whole != nullptr && bombSpriteSetView.whole->getwidth() > 0)
-            {
-                drawImageAlphaRotated(bombSpriteSetView.whole, quitX, quitY - 10, -ringSpin * 1.2, quitBombScale, 0.98);
             }
         }
 
@@ -1883,6 +2389,10 @@ int main()
 
         Sleep(16);
     }
+
+    // Don't close graphics — outer loop re-enters main menu
+    }
+    } // end outer while(true)
 
     EndBatchDraw();
     music.stopAll();

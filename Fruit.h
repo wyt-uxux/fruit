@@ -21,7 +21,8 @@ namespace FruitGame
         Banana
     };
 
-    inline constexpr int kWindowWidth = 960;
+    // Slightly narrower window width as requested
+    inline constexpr int kWindowWidth = 768;
     inline constexpr int kWindowHeight = 540;
 
     struct Vec2
@@ -117,6 +118,9 @@ namespace FruitGame
         [[nodiscard]] const std::vector<Fruit>& fruits() const noexcept;
         [[nodiscard]] std::vector<Fruit>& fruits() noexcept;
 
+        // 新增：清除所有水果残片
+        void clearHalves() noexcept;
+
     private:
         void spawnOneRandomFruit();
         void spawnOneBomb();
@@ -145,7 +149,7 @@ namespace FruitGame
         std::vector<FruitHalf> slicedHalves_;
         int missedCount_ = 0;
         int spawnedSinceLastFrame_ = 0;
-        bool spawnEnabled_ = true;
+        bool spawnEnabled_ = false;
         SpawnCallback spawnCallback_;
         BombHitCallback bombHitCallback_;
         int spawnWaveCount_ = 0;

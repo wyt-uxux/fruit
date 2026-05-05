@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "MusicController.h"
 
 #include <Windows.h>

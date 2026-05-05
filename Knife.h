@@ -17,6 +17,10 @@ namespace FruitGame
     public:
         FruitKnife();
 
+        // Enable or disable the advanced knife visual effect (e.g., bamboo leaves).
+        void setAdvancedEffect(bool enabled);
+        [[nodiscard]] bool isAdvancedEffectEnabled() const noexcept;
+
         void update(double dt, HWND hwnd);
         void render() const;
         void triggerFlash(const POINT& impactPoint, double angle, double durationSec = 0.20);

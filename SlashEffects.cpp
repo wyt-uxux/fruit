@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "SlashEffects.h"
 
 #include "Fruit.h"

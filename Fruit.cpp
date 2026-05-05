@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "Fruit.h"
 
 #include <algorithm>

@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "WaveController.h"
 
 #include <algorithm>
@@ -42,11 +43,6 @@ namespace FruitGame
             static_cast<unsigned int>((now >> 32) & 0xFFFFFFFFULL) };
         rng_.seed(seedSeq);
         primeGroup();
-    }
-
-    void WaveController::setDifficultyTier(int tier) noexcept
-    {
-        difficultyTier_ = std::max(0, std::min(tier, 3));
     }
 
     WaveController::WaveGroup WaveController::buildGroup(std::size_t groupIndex)
@@ -172,8 +168,10 @@ namespace FruitGame
             std::uniform_int_distribution<int> weightDist(1, 100);
             const int roll = weightDist(rng_);
             int cumulative = 0;
-            for (const auto& [index, weight] : kWeightedGroups)
+            for (const auto& pair : kWeightedGroups)
             {
+                const auto& index = pair.first;
+                const auto& weight = pair.second;
                 cumulative += weight;
                 if (roll <= cumulative)
                 {
@@ -271,6 +269,11 @@ namespace FruitGame
         hasPendingBatch_ = false;
         pendingBatch_ = {};
         return true;
+    }
+
+    void WaveController::setDifficultyTier(int tier) noexcept
+    {
+        difficultyTier_ = std::max(0, std::min(tier, 3));
     }
 
     WaveType WaveController::currentWaveType() const

@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "Effect.h"
 
 #include <algorithm>

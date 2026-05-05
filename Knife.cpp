@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include "Knife.h"
 
 #include <algorithm>
@@ -125,6 +126,27 @@ namespace FruitGame
     FruitKnife::FruitKnife()
         : effect_(createBambooKnifeEffect())
     {
+    }
+
+    void FruitKnife::setAdvancedEffect(bool enabled)
+    {
+        if (enabled)
+        {
+            if (!effect_)
+            {
+                effect_ = createBambooKnifeEffect();
+            }
+        }
+        else
+        {
+            // disable by releasing the heavyweight effect; trail rendering still occurs.
+            effect_.reset();
+        }
+    }
+
+    bool FruitKnife::isAdvancedEffectEnabled() const noexcept
+    {
+        return effect_ != nullptr;
     }
 
     void FruitKnife::update(double dt, HWND hwnd)

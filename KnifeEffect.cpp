@@ -1,3 +1,5 @@
+#define NOMINMAX
+
 #include "KnifeEffect.h"
 
 #include "Fruit.h"
